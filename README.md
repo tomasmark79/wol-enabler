@@ -11,6 +11,24 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\enable-wol.ps1
 ```
 
+### Pouze kontrola bez zmen
+
+Stav WoL na strane Windows lze precist samostatnym read-only skriptem:
+
+```powershell
+.\get-wol-status.ps1
+```
+
+Pro hromadny sber dat:
+
+```powershell
+.\get-wol-status.ps1 -AsJson
+```
+
+`WindowsStatus: Active` znamena, ze je adapter aktivni, ovladac ma povoleny magic packet a Windows ho vede mezi zarizenimi opravnenymi k probuzeni. `ShutdownStatus: BlockedByFastStartup` upozorni na zapnuty Fast Startup. `FirmwareStatus: NotVerifiedByWindows` je zamerne: samotne standardni Windows API nepotvrdi stav UEFI. Pro firmware pouzijte `enable-wol.ps1 -ReportOnly` a backend vyrobce.
+
+Volba `-FailIfNotReady` vraci exit code `2`, pokud nektera karta neni pripravena; to se hodi pro Intune, SCCM nebo jiny deployment system.
+
 Nejprve lze bez zapisu zobrazit nalezene firmware nastaveni:
 
 ```powershell
