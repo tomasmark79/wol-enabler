@@ -1,92 +1,94 @@
-# WoL enabler
+# WoL Enabler
 
-Skripty zapinaji Wake-on-LAN (magic packet) v UEFI i sitovem ovladaci. Windows skript podporuje firemni pocitace Dell, HP, Lenovo a ASUS. UEFI nema univerzalni zapisove API, proto ma kazdy vyrobce vlastni backend.
+> Experimental project. This is a proof-of-concept utility and is not fully tested across hardware, firmware variants, or deployment environments. Use it at your own risk.
+
+The scripts enable Wake-on-LAN (magic packet) in both the UEFI/BIOS and the network adapter. The Windows script supports business-class Dell, HP, Lenovo, and ASUS systems. UEFI does not expose a universal write API, so each vendor requires a vendor-specific backend.
 
 ## Windows 11
 
-Otevrete PowerShell jako spravce a spustte:
+Open PowerShell as administrator and run:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\enable-wol.ps1
 ```
 
-### Pouze kontrola bez zmen
+### Read-only status check
 
-Stav WoL na strane Windows lze precist samostatnym read-only skriptem:
+The Windows WoL state can be inspected with a separate read-only script:
 
 ```powershell
 .\get-wol-status.ps1
 ```
 
-Pro hromadny sber dat:
+For bulk collection of data:
 
 ```powershell
 .\get-wol-status.ps1 -AsJson
 ```
 
-`WindowsStatus: Active` znamena, ze je adapter aktivni, ovladac ma povoleny magic packet a Windows ho vede mezi zarizenimi opravnenymi k probuzeni. `ShutdownStatus: BlockedByFastStartup` upozorni na zapnuty Fast Startup. `FirmwareStatus: NotVerifiedByWindows` je zamerne: samotne standardni Windows API nepotvrdi stav UEFI. Pro firmware pouzijte `enable-wol.ps1 -ReportOnly` a backend vyrobce.
+`WindowsStatus: Active` means the adapter is active, the driver has magic packet enabled, and Windows sees it as a device allowed to wake the system. `ShutdownStatus: BlockedByFastStartup` indicates Fast Startup is enabled. `FirmwareStatus: NotVerifiedByWindows` is intentional: the default Windows API does not verify the UEFI state. For firmware validation, use `enable-wol.ps1 -ReportOnly` and the vendor backend.
 
-Volba `-FailIfNotReady` vraci exit code `2`, pokud nektera karta neni pripravena; to se hodi pro Intune, SCCM nebo jiny deployment system.
+The `-FailIfNotReady` option returns exit code `2` if any adapter is not ready; this is useful for Intune, SCCM, or other deployment systems.
 
-Nejprve lze bez zapisu zobrazit nalezene firmware nastaveni:
+You can review the discovered firmware settings without writing anything first:
 
 ```powershell
 .\enable-wol.ps1 -ReportOnly
 ```
 
-Pokud je UEFI chraneno heslem, zadejte ho bez ulozeni do prikazove radky:
+If the UEFI is protected by a password, provide it without storing it in the command history:
 
 ```powershell
-$biosPassword = Read-Host 'UEFI heslo' -AsSecureString
+$biosPassword = Read-Host 'UEFI password' -AsSecureString
 .\enable-wol.ps1 -BiosPassword $biosPassword
 ```
 
-Jen pro konkretni adapter: `.\enable-wol.ps1 -Name 'Ethernet'`. Jen firmware: `.\enable-wol.ps1 -SkipWindowsNic`.
+Only a specific adapter: `.\enable-wol.ps1 -Name 'Ethernet'`. Only firmware: `.\enable-wol.ps1 -SkipWindowsNic`.
 
-### Pozadavky podle vyrobce
+### Vendor requirements
 
-- **HP Business**: pouziva vestavene `HP InstrumentedBIOS` WMI.
-- **Lenovo ThinkPad/ThinkCentre/ThinkStation**: pouziva vestavene Lenovo BIOS WMI.
-- **Dell business**: v deployment image musi byt nainstalovan `Dell Command PowerShell Provider` nebo `Dell Command Configure` (`cctk.exe`).
-- **ASUS commercial**: nainstalujte `ASUS BIOS Config Tool` a dejte `act.exe` do `PATH`, vedle skriptu, nebo predejte `-AsusActPath C:\cesta\act.exe`. ACT se stahuje ze support stranky konkretniho modelu v sekci Software and Utility.
+- **HP Business**: uses the built-in `HP InstrumentedBIOS` WMI.
+- **Lenovo ThinkPad/ThinkCentre/ThinkStation**: uses the built-in Lenovo BIOS WMI.
+- **Dell business**: the deployment image must include the `Dell Command PowerShell Provider` or `Dell Command Configure` (`cctk.exe`).
+- **ASUS commercial**: install the `ASUS BIOS Config Tool` and place `act.exe` on `PATH`, next to the script, or pass `-AsusActPath C:\path\to\act.exe`. ACT is downloaded from the support page for the specific model under the Software and Utility section.
 
-U ASUS skript zapne `Wake On LAN` / `Power On By PCI-E`, vypne `ErP` nebo `Max Power Saving`, pokud je ACT zpristupni, a vypne Windows Fast Startup. Tyto kroky ASUS pozaduje pro probuzeni po vypnuti.
+On ASUS systems, the script enables `Wake On LAN` / `Power On By PCI-E`, disables `ErP` or `Max Power Saving` when ACT is available, and disables Windows Fast Startup. These steps are required by ASUS for wake after shutdown.
 
-ASUS pouze firmware, pokud je ACT v jine ceste:
+ASUS firmware only, if ACT is in a different directory:
 
 ```powershell
 .\enable-wol.ps1 -SkipWindowsNic -AsusActPath 'C:\Program Files\ASUS\ACT\act.exe'
 ```
 
-ASUS s ACT sifrovanym password souborem:
+ASUS with an ACT encrypted password file:
 
 ```powershell
 .\enable-wol.ps1 -AsusActPath 'C:\Tools\ACT\act.exe' -AsusPasswordFile 'C:\Tools\ACT\bios-password.bin'
 ```
 
-Consumer modely a jini vyrobci nemusi z Windows nabizet zapisovatelne firmware rozhrani. Pro hromadne nasazeni nejprve spustte `-ReportOnly` na jednom modelu z kazde modelove rady. Pokud jsou pocitace chranene ruznymi UEFI hesly, musi je deployment system dodat bezpecnym zpusobem.
+Consumer models and other vendors may not expose writable firmware interfaces from Windows. For broad deployment, first run `-ReportOnly` on one device from each model family. If computers are protected by different UEFI passwords, the deployment system must supply them securely.
 
-Skript navic nastavi standardni Windows volbu pro magic packet a zkusi bezne vyrobcem specificke nazvy vlastnosti ovladace.
+The script also sets the standard Windows magic packet option and tries common vendor-specific adapter property names.
 
-## Debian/Ubuntu a systemd Linux
+## Debian/Ubuntu and systemd Linux
 
 ```bash
 sudo apt update && sudo apt install -y ethtool
 sudo ./enable-wol-linux.sh
 ```
 
-Pro jedno rozhrani, napriklad `enp3s0`: `sudo ./enable-wol-linux.sh enp3s0`.
+For a single interface, for example `enp3s0`: `sudo ./enable-wol-linux.sh enp3s0`.
 
 ## NixOS
 
-Jednorazove (a po dalsim bootu znovu spustit):
+One-off (run again after the next boot):
 
 ```bash
 nix-shell -p ethtool --run 'sudo ./enable-wol-linux.sh enp3s0'
 ```
 
-Trvale deklarativne pridejte do `configuration.nix` (upravte nazev rozhrani):
+Persistently add the following to `configuration.nix` (adjust the interface name):
 
 ```nix
 environment.systemPackages = [ pkgs.ethtool ];
@@ -98,6 +100,6 @@ systemd.services.wol-enp3s0 = {
 };
 ```
 
-Pak pouzijte `sudo nixos-rebuild switch`.
+Then run `sudo nixos-rebuild switch`.
 
-Kontrola na Linuxu: `ethtool enp3s0 | grep Wake-on` musi vratit `Wake-on: g`.
+Linux verification: `ethtool enp3s0 | grep Wake-on` should return `Wake-on: g`.

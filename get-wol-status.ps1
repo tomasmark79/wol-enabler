@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Read-only kontrola Wake-on-LAN ve Windows 11.
+Read-only Wake-on-LAN status check for Windows 11.
 
 .EXAMPLE
 .\get-wol-status.ps1
@@ -29,7 +29,7 @@ if (-not $Name) {
 }
 
 if (-not $Name) {
-    Write-Error 'Nenalezena zadna fyzicka ethernetova karta.'
+    Write-Error 'No physical Ethernet adapter was found.'
     exit 3
 }
 

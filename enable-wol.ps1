@@ -1,17 +1,21 @@
 #requires -RunAsAdministrator
 <#
 .SYNOPSIS
-Zapne Wake-on-LAN v UEFI/BIOS a v ethernetovem ovladaci Windows 11.
+Enables Wake-on-LAN in UEFI/BIOS and in the Windows 11 network adapter.
 
 .DESCRIPTION
-Automaticky pouzije rozhrani vyrobce pro podporovane firemni pocitace:
-  Dell   - Dell Command PowerShell Provider nebo Dell Command Configure (cctk)
-  HP     - vestavene HP Instrumented BIOS WMI
-  Lenovo - vestavene Lenovo BIOS WMI
+Automatically uses vendor-specific interfaces for supported business PCs:
+  Dell   - Dell Command PowerShell Provider or Dell Command Configure (cctk)
+  HP     - built-in HP Instrumented BIOS WMI
+  Lenovo - built-in Lenovo BIOS WMI
   ASUS   - ASUS Configuration Tool (act.exe)
 
-UEFI nema standardni zapisove API. Ostatni vyrobci proto vyzaduji vlastni
-nastroj nebo modelove specificky backend.
+UEFI does not expose a universal write API. Other vendors therefore require
+custom tooling or a model-specific backend.
+
+EXPERIMENTAL NOTE
+This script is intended as a proof-of-concept utility and is not fully tested
+across all vendor models, firmware variants, or deployment environments.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -57,7 +61,7 @@ function Set-HpFirmwareWol([string] $Password) {
     $namespace = 'root/HP/InstrumentedBIOS'
     $settings = @(Get-CimInstance -Namespace $namespace -ClassName HP_BIOSSetting |
         Where-Object { $_.Name -match '(?i)^wake.+(lan|network)' -and $_.Name -notmatch '(?i)wlan' })
-    if (-not $settings.Count) { throw 'HP firmware nepublikuje zadne nastaveni Wake on LAN.' }
+    if (-not $settings.Count) { throw 'HP firmware does not expose any Wake on LAN settings.' }
     if ($ReportOnly) {
         $settings | Select-Object Name, CurrentValue, PossibleValues | Format-List
         return
@@ -66,14 +70,14 @@ function Set-HpFirmwareWol([string] $Password) {
     $interface = Get-CimInstance -Namespace $namespace -ClassName HP_BIOSSettingInterface | Select-Object -First 1
     foreach ($setting in $settings) {
         $value = Select-EnabledValue $setting @('Boot to Hard Drive')
-        if ($PSCmdlet.ShouldProcess("HP UEFI: $($setting.Name)", "nastavit '$value'")) {
+        if ($PSCmdlet.ShouldProcess("HP UEFI: $($setting.Name)", "set '$value'")) {
             $result = Invoke-CimMethod -InputObject $interface -MethodName SetBIOSSetting -Arguments @{
                 Name = $setting.Name
                 Value = $value
                 Password = if ($Password) { "<utf-16/>$Password" } else { '' }
             }
             $status = Get-ResultText $result
-            if ($status -notin @('0', 'Success')) { throw "HP odmitlo '$($setting.Name)=$value' (kod $status)." }
+            if ($status -notin @('0', 'Success')) { throw "HP rejected '$($setting.Name)=$value' (status $status)." }
             Write-Host "  HP UEFI: $($setting.Name) = $value"
         }
     }
@@ -84,12 +88,12 @@ function Set-LenovoFirmwareWol([string] $Password) {
     $settings = @(Get-CimInstance -Namespace $namespace -ClassName Lenovo_BiosSetting | Where-Object {
         $_.CurrentSetting -match '(?i)^wake.+(lan|network),' -and $_.CurrentSetting -notmatch '(?i)wlan'
     })
-    if (-not $settings.Count) { throw 'Lenovo firmware nepublikuje zadne nastaveni Wake on LAN.' }
+    if (-not $settings.Count) { throw 'Lenovo firmware does not expose any Wake on LAN settings.' }
     if ($ReportOnly) {
         $settings | Select-Object CurrentSetting | Format-Table -AutoSize
         return
     }
-    if (-not $PSCmdlet.ShouldProcess('Lenovo UEFI: Wake on LAN', 'nastavit a ulozit')) { return }
+    if (-not $PSCmdlet.ShouldProcess('Lenovo UEFI: Wake on LAN', 'set and save')) { return }
 
     $setter = Get-CimInstance -Namespace $namespace -ClassName Lenovo_SetBiosSetting | Select-Object -First 1
     $saver = Get-CimInstance -Namespace $namespace -ClassName Lenovo_SaveBiosSettings | Select-Object -First 1
@@ -105,14 +109,14 @@ function Set-LenovoFirmwareWol([string] $Password) {
                 $success = $true
                 break
             }
-            if ($status -notmatch '(?i)invalid parameter') { throw "Lenovo odmitlo '$settingName' (stav $status)." }
+            if ($status -notmatch '(?i)invalid parameter') { throw "Lenovo rejected '$settingName' (status $status)." }
         }
-        if (-not $success) { throw "Lenovo: pro '$settingName' nebyla nalezena podporovana zapnuta hodnota." }
+        if (-not $success) { throw "Lenovo: no supported enabled value was found for '$settingName'." }
     }
     $saveParameter = if ($Password) { "$Password,ascii,us;" } else { ';' }
     $saved = Invoke-CimMethod -InputObject $saver -MethodName SaveBiosSettings -Arguments @{ parameter = $saveParameter }
     $saveStatus = Get-ResultText $saved
-    if ($saveStatus -ine 'Success') { throw "Lenovo neulozilo UEFI nastaveni (stav $saveStatus)." }
+    if ($saveStatus -ine 'Success') { throw "Lenovo did not save the UEFI settings (status $saveStatus)." }
 }
 
 function Set-AsusFirmwareWol([string] $Password) {
@@ -126,18 +130,18 @@ function Set-AsusFirmwareWol([string] $Password) {
     ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
     $act = $actCandidates | Select-Object -First 1
     if (-not $act) {
-        throw 'ASUS vyzaduje oficialni ASUS Configuration Tool (act.exe). Dejte act.exe vedle skriptu nebo pouzijte -AsusActPath.'
+        throw 'ASUS requires the official ASUS Configuration Tool (act.exe). Place act.exe next to the script or use -AsusActPath.'
     }
     if ($AsusPasswordFile -and -not (Test-Path -LiteralPath $AsusPasswordFile -PathType Leaf)) {
-        throw "ASUS password file neexistuje: $AsusPasswordFile"
+        throw "ASUS password file does not exist: $AsusPasswordFile"
     }
 
     if ($ReportOnly) {
         & $act --get --filter '*Wake*LAN*'
-        if ($LASTEXITCODE -ne 0) { throw "ASUS ACT report selhal (kod $LASTEXITCODE)." }
+        if ($LASTEXITCODE -ne 0) { throw "ASUS ACT report failed (exit code $LASTEXITCODE)." }
         return
     }
-    if (-not $PSCmdlet.ShouldProcess('ASUS UEFI: Wake on LAN', 'zapnout WoL a vypnout ErP/Max Power Saving')) { return }
+    if (-not $PSCmdlet.ShouldProcess('ASUS UEFI: Wake on LAN', 'enable WoL and disable ErP/Max Power Saving')) { return }
 
     $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) ("wol-enabler-asus-" + [guid]::NewGuid().ToString('N'))
     $jsonPath = Join-Path $temporaryDirectory 'bios-settings.json'
@@ -149,7 +153,7 @@ function Set-AsusFirmwareWol([string] $Password) {
 
         & $act --get --output $jsonPath @authArguments
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $jsonPath)) {
-            throw "ASUS ACT export BIOS konfigurace selhal (kod $LASTEXITCODE)."
+            throw "ASUS ACT BIOS configuration export failed (exit code $LASTEXITCODE)."
         }
         $configuration = Get-Content -LiteralPath $jsonPath -Raw | ConvertFrom-Json
         $changed = [Collections.Generic.List[string]]::new()
@@ -195,16 +199,16 @@ function Set-AsusFirmwareWol([string] $Password) {
 
         Update-AsusJsonNode $configuration
         if (-not $changed.Count) {
-            throw 'ASUS ACT JSON neobsahuje podporovane Wake on LAN/Power On By PCI-E nastaveni. Tento model je pres ACT nezpristupnuje.'
+            throw 'ASUS ACT JSON does not include supported Wake on LAN / Power On By PCI-E settings. This model is not accessible via ACT.'
         }
         $utf8WithoutBom = New-Object Text.UTF8Encoding($false)
         [IO.File]::WriteAllText($jsonPath, ($configuration | ConvertTo-Json -Depth 100), $utf8WithoutBom)
         & $act --set --input $jsonPath @authArguments
-        if ($LASTEXITCODE -ne 0) { throw "ASUS ACT zapis BIOS konfigurace selhal (kod $LASTEXITCODE)." }
+        if ($LASTEXITCODE -ne 0) { throw "ASUS ACT write of BIOS configuration failed (exit code $LASTEXITCODE)." }
         $changed | Sort-Object -Unique | ForEach-Object { Write-Host "  ASUS UEFI: $_" }
         $powerKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power'
         Set-ItemProperty -LiteralPath $powerKey -Name HiberbootEnabled -Value 0
-        Write-Host '  Windows: Fast Startup = Disabled (pozadavek ASUS pro WoL po vypnuti)'
+        Write-Host '  Windows: Fast Startup = Disabled (ASUS requirement for WoL after shutdown)'
     } finally {
         if (Test-Path -LiteralPath $temporaryDirectory) {
             Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force
@@ -220,7 +224,7 @@ function Set-DellFirmwareWol([string] $Password) {
         if ($ReportOnly) { $item | Format-List; return }
         $arguments = @{ Path = 'DellSmbios:/PowerManagement/WakeOnLan'; Value = 'LANOnly'; ErrorAction = 'Stop' }
         if ($Password) { $arguments.Password = $Password }
-        if ($PSCmdlet.ShouldProcess('Dell UEFI: WakeOnLan', "nastavit 'LANOnly'")) {
+        if ($PSCmdlet.ShouldProcess('Dell UEFI: WakeOnLan', "set 'LANOnly'")) {
             Set-Item @arguments
             Write-Host '  Dell UEFI: WakeOnLan = LANOnly'
         }
@@ -233,10 +237,10 @@ function Set-DellFirmwareWol([string] $Password) {
         "${env:ProgramFiles(x86)}\Dell\Command Configure\X86_64\cctk.exe"
     ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
     if (-not $cctk) {
-        throw 'Chybi Dell Command PowerShell Provider nebo Dell Command Configure (cctk.exe). Nainstalujte jeden z nich do deployment image.'
+        throw 'Missing Dell Command PowerShell Provider or Dell Command Configure (cctk.exe). Install one in the deployment image.'
     }
     if ($ReportOnly) { & $cctk --wakeonlan; return }
-    if (-not $PSCmdlet.ShouldProcess('Dell UEFI: WakeOnLan', 'nastavit pomoci cctk')) { return }
+    if (-not $PSCmdlet.ShouldProcess('Dell UEFI: WakeOnLan', 'set via cctk')) { return }
 
     foreach ($value in 'lanonly', 'enable', 'onboard') {
         $arguments = @("--wakeonlan=$value")
@@ -247,12 +251,12 @@ function Set-DellFirmwareWol([string] $Password) {
             return
         }
     }
-    throw "Dell Command Configure nedokazal nastavit WakeOnLan (posledni kod $LASTEXITCODE)."
+    throw "Dell Command Configure could not set WakeOnLan (last exit code $LASTEXITCODE)."
 }
 
 $system = Get-CimInstance Win32_ComputerSystem
 $firmware = Get-CimInstance Win32_BIOS
-Write-Host "Pocitac: $($system.Manufacturer) $($system.Model); BIOS $($firmware.SMBIOSBIOSVersion)"
+Write-Host "Computer: $($system.Manufacturer) $($system.Model); BIOS $($firmware.SMBIOSBIOSVersion)"
 
 if (-not $SkipFirmware) {
     $plainPassword = ConvertTo-PlainText $BiosPassword
@@ -262,7 +266,7 @@ if (-not $SkipFirmware) {
             'HP|Hewlett-Packard' { Set-HpFirmwareWol $plainPassword; break }
             'Lenovo' { Set-LenovoFirmwareWol $plainPassword; break }
             'ASUSTeK|ASUS' { Set-AsusFirmwareWol $plainPassword; break }
-            default { throw "Vyrobce '$($system.Manufacturer)' zatim nema v tomto skriptu firmware backend." }
+            default { throw "Manufacturer '$($system.Manufacturer)' does not yet have a firmware backend in this script." }
         }
     } finally { $plainPassword = $null }
 }
@@ -274,7 +278,7 @@ if (-not $Name) {
         $_.Status -ne 'Disabled' -and $_.InterfaceDescription -notmatch 'Wi-?Fi|Wireless'
     } | Select-Object -ExpandProperty Name)
 }
-if (-not $Name) { throw 'Nenalezena zadna aktivni fyzicka ethernetova karta.' }
+if (-not $Name) { throw 'No active physical Ethernet adapter was found.' }
 
 foreach ($adapterName in $Name) {
     $adapter = Get-NetAdapter -Name $adapterName
@@ -282,7 +286,7 @@ foreach ($adapterName in $Name) {
     try {
         Set-NetAdapterPowerManagement -Name $adapter.Name -WakeOnMagicPacket Enabled
         Write-Host '  WakeOnMagicPacket = Enabled'
-    } catch { Write-Warning "Ovladac nepodporuje standardni power-management API: $($_.Exception.Message)" }
+    } catch { Write-Warning "The driver does not support the standard power-management API: $($_.Exception.Message)" }
 
     foreach ($propertyName in 'Wake on Magic Packet', 'Wake on magic packet', 'Wake on LAN', 'Shutdown Wake-On-Lan', 'Wake From Shutdown') {
         foreach ($value in 'Enabled', 'On', 'Yes') {
@@ -296,4 +300,4 @@ foreach ($adapterName in $Name) {
     Restart-NetAdapter -Name $adapter.Name -Confirm:$false
 }
 
-Write-Host 'Hotovo. Zmena UEFI se u nekterych modelu projevi az po pristim restartu.'
+Write-Host 'Done. The UEFI change may appear only after the next reboot on some models.'
